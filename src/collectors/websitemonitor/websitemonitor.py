@@ -9,7 +9,11 @@ Gather HTTP Response code and Duration of HTTP request
 
 import urllib2
 import time
+import re
+
+from urlparse import urlparse
 from datetime import datetime
+
 import diamond.collector
 
 
@@ -22,8 +26,7 @@ class WebsiteMonitorCollector(diamond.collector.Collector):
         config_help = super(WebsiteMonitorCollector,
                             self).get_default_config_help()
         config_help.update({
-            'URL': "FQDN of HTTP endpoint to test",
-
+            'endpoints': "A list of FQDN of HTTP endpoints to test",
         })
         return config_help
 
@@ -33,13 +36,20 @@ class WebsiteMonitorCollector(diamond.collector.Collector):
         """
         default_config = super(WebsiteMonitorCollector,
                                self).get_default_config()
-        default_config['URL'] = ''
+        default_config['endpoints'] = []
         default_config['path'] = 'websitemonitor'
         return default_config
 
-    def collect(self):
-        req = urllib2.Request('%s' % (self.config['URL']))
+    def get_endpoint_name(self, endpoint):
+        netloc = urlparse(endpoint).netloc
+        return re.sub(r'[^0-9A-Za-z]', '_', netloc)
 
+    def check_endpoint(self, endpoint):
+        """
+        Collects information about passed endpoint.
+        """
+        req = urllib2.Request('%s' % (endpoint))
+        endpoint_name = self.get_endpoint_name(endpoint)
         try:
             # time in seconds since epoch as a floating number
             start_time = time.time()
@@ -57,10 +67,10 @@ class WebsiteMonitorCollector(diamond.collector.Collector):
             # Response time in milliseconds
             rt = int(format((end_time - start_time) * 1000, '.0f'))
             # Publish metrics
-            self.publish('response_time.%s' % (resp.code), rt,
+            self.publish('%s.response_time.%s' % (endpoint_name, resp.code), rt,
                          metric_type='COUNTER')
         # urllib2 will puke on non HTTP 200/OK URLs
-        except urllib2.URLError, e:
+        except urllib2.HTTPError, e:
             if e.code != 200:
                 # time in seconds since epoch as a floating number
                 end_time = time.time()
@@ -68,11 +78,15 @@ class WebsiteMonitorCollector(diamond.collector.Collector):
                 rt = int(format((end_time - start_time) * 1000, '.0f'))
                 # Publish metrics -- this is recording a failure, rt will
                 # likely be 0 but does capture HTTP Status Code
-                self.publish('response_time.%s' % (e.code), rt,
+                self.publish('%s.response_time.%s' % (endpoint_name, e.code), rt,
                              metric_type='COUNTER')
 
         except IOError, e:
-            self.log.error('Unable to open %s' % (self.config['URL']))
+            self.log.error('Unable to open %s' % (endpoint))
 
         except Exception, e:
             self.log.error("Unknown error opening url: %s", e)
+
+    def collect(self):
+        for endpoint in self.config['endpoints']:
+            self.check_endpoint(endpoint)
